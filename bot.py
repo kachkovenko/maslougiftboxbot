@@ -26,11 +26,12 @@ logger = logging.getLogger(__name__)
 
 
 def escape_md(text: str) -> str:
-    """Escape Markdown special characters"""
+    """Escape Markdown special characters for MarkdownV2"""
     if not text:
         return ""
-    # Escape special Markdown characters
-    for char in ['_', '*', '`', '[', ']', '(', ')', '~', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']:
+    # Escape special MarkdownV2 characters (order matters for backslash)
+    special_chars = ['\\', '_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']
+    for char in special_chars:
         text = text.replace(char, f'\\{char}')
     return text
 
@@ -355,7 +356,7 @@ async def list_gifts(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     buyer_info = f" — {', '.join(names)}"
                 
                 gift_name_escaped = escape_md(gift['name'])
-                text += f"{status} {gift_name_escaped} \\(~{price_str}\\){buyer_info}\n"
+                text += f"{status} {gift_name_escaped} \\(\\~{escape_md(price_str)}\\){buyer_info}\n"
                 keyboard.append([InlineKeyboardButton(
                     f"{status} {gift['name'][:30]}",
                     callback_data=f"gift_{gift['id']}"
@@ -404,8 +405,8 @@ async def show_gift_details(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     text = (
         f"🎁 *{gift_name}*\n\n"
-        f"💰 Цена: ~{escape_md(price_str)}\n"
-        f"📁 Категория: {category}\n"
+        f"💰 Цена: \\~{escape_md(price_str)}\n"
+        f"📁 Категория: {escape_md(category)}\n"
         f"📊 Статус: {status} {status_text}\n"
         f"💡 Добавил: {added_by}\n"
     )
@@ -715,7 +716,7 @@ async def my_gifts(update: Update, context: ContextTypes.DEFAULT_TYPE):
         amount = f" \\(ваш вклад: {gift['amount']}₽\\)" if gift.get('amount') else ""
         
         gift_name = escape_md(gift['name'])
-        text += f"{status} {gift_name} \\(~{escape_md(price_str)}\\){amount}\n"
+        text += f"{status} {gift_name} \\(\\~{escape_md(price_str)}\\){amount}\n"
         keyboard.append([InlineKeyboardButton(
             f"{status} {gift['name'][:30]}",
             callback_data=f"gift_{gift['id']}"
