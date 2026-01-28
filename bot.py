@@ -67,11 +67,16 @@ CATEGORIES = {
 
 # Status emojis
 STATUS_EMOJI = {
-    "available": "🟢",
-    "claimed": "🟡",
-    "bought": "✅",
-    "already_has": "🚫"
+    "available": "🟢",      # Свободен
+    "claimed": "🟡",        # Один человек купит
+    "shared": "👥",         # Несколько скидываются (не набрано)
+    "funded": "🔴",         # Сумма полностью набрана
+    "bought": "✅",         # Уже куплен
+    "already_has": "🚫"     # Уже есть у именинника
 }
+
+# Minimum contribution amount
+MIN_CONTRIBUTION = 1000  # Минимальный взнос 1000₽
 
 
 def is_banned(user_id: int) -> bool:
@@ -346,14 +351,39 @@ async def list_gifts(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if cat_key in by_category:
             text += f"\n{escape_md(cat_name)}\n"
             for gift in by_category[cat_key]:
-                status = STATUS_EMOJI.get(gift['status'], "🟢")
                 price_str = f"{gift['price']}₽" if gift['price'] else "цена?"
                 buyers = db.get_gift_buyers(gift['id'])
                 
+                # Determine the right status icon
+                if gift['status'] in ["bought", "already_has"]:
+                    status = STATUS_EMOJI.get(gift['status'], "🟢")
+                elif gift['status'] == "claimed" and buyers:
+                    total_pledged = sum(b['amount'] or 0 for b in buyers)
+                    if len(buyers) > 1:
+                        # Multiple people sharing
+                        if gift['price'] and total_pledged >= gift['price']:
+                            status = "🔴"  # Fully funded
+                        else:
+                            status = "👥"  # Sharing, not complete
+                    else:
+                        # Single buyer
+                        if gift['price'] and total_pledged >= gift['price']:
+                            status = "🔴"  # Fully funded
+                        else:
+                            status = "🟡"  # Single claimer
+                else:
+                    status = STATUS_EMOJI.get(gift['status'], "🟢")
+                
                 buyer_info = ""
                 if buyers:
-                    names = [escape_md(b['user_name'].split()[0]) for b in buyers]
-                    buyer_info = f" — {', '.join(names)}"
+                    buyer_parts = []
+                    for b in buyers:
+                        name = escape_md(b['user_name'].split()[0])
+                        if b['amount']:
+                            buyer_parts.append(f"{name} {b['amount']}₽")
+                        else:
+                            buyer_parts.append(name)
+                    buyer_info = f" \\- {', '.join(buyer_parts)}"
                 
                 gift_name_escaped = escape_md(gift['name'])
                 text += f"{status} {gift_name_escaped} \\(\\~{escape_md(price_str)}\\){buyer_info}\n"
@@ -389,13 +419,34 @@ async def show_gift_details(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     user = update.effective_user
-    status = STATUS_EMOJI.get(gift['status'], "🟢")
-    status_text = {
-        "available": "Свободен",
-        "claimed": "Кто\\-то покупает",  # Escaped hyphen
-        "bought": "Уже куплен",
-        "already_has": "Уже есть у именинника"
-    }.get(gift['status'], "Свободен")
+    buyers = db.get_gift_buyers(gift_id)
+    
+    # Calculate funding status
+    total_pledged = sum(b['amount'] or 0 for b in buyers)
+    gift_price = gift['price'] or 0
+    is_fully_funded = gift_price > 0 and total_pledged >= gift_price
+    is_shared = len(buyers) > 1
+    
+    # Determine status emoji and text
+    if gift['status'] == "bought":
+        status = "✅"
+        status_text = "Уже куплен"
+    elif gift['status'] == "already_has":
+        status = "🚫"
+        status_text = "Уже есть у именинника"
+    elif gift['status'] == "claimed":
+        if is_fully_funded:
+            status = "🔴"
+            status_text = "Сумма собрана\\!"
+        elif is_shared:
+            status = "👥"
+            status_text = "Скидываются несколько человек"
+        else:
+            status = "🟡"
+            status_text = "Кто\\-то покупает"
+    else:
+        status = "🟢"
+        status_text = "Свободен"
     
     price_str = f"{gift['price']}₽" if gift['price'] else "не указана"
     category = CATEGORIES.get(gift['category'], CATEGORIES['other'])
@@ -412,26 +463,33 @@ async def show_gift_details(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"💡 Добавил: {added_by}\n"
     )
     
-    buyers = db.get_gift_buyers(gift_id)
+    # Show funding progress if there are buyers
+    if buyers and gift_price > 0:
+        progress_pct = min(100, int(total_pledged / gift_price * 100))
+        text += f"\n💵 *Собрано:* {total_pledged} из {gift_price}₽ \\({progress_pct}%\\)\n"
+    
     if buyers:
         text += "\n👥 *Участники:*\n"
         for buyer in buyers:
             buyer_name = escape_md(buyer['user_name'])
-            amount = f" \\- {buyer['amount']}₽" if buyer['amount'] else ""
+            amount = f" \\- {buyer['amount']}₽" if buyer['amount'] else " \\- сумма не указана"
             text += f"  • {buyer_name}{amount}\n"
     
     keyboard = []
     
+    # Check if current user is a buyer
+    user_is_buyer = any(b['user_id'] == user.id for b in buyers)
+    
     if gift['status'] == "available":
-        keyboard.append([InlineKeyboardButton("🙋 Я куплю это!", callback_data=f"claim_{gift_id}")])
-        keyboard.append([InlineKeyboardButton("👥 Скинемся вместе", callback_data=f"share_{gift_id}")])
+        keyboard.append([InlineKeyboardButton("🙋 Я куплю это сам!", callback_data=f"claim_{gift_id}")])
+        if gift_price and gift_price >= MIN_CONTRIBUTION * 2:
+            keyboard.append([InlineKeyboardButton("👥 Скинемся вместе", callback_data=f"share_{gift_id}")])
     elif gift['status'] == "claimed":
-        # Check if current user is a buyer
-        user_is_buyer = any(b['user_id'] == user.id for b in buyers)
         if user_is_buyer:
             keyboard.append([InlineKeyboardButton("✅ Уже купил!", callback_data=f"bought_{gift_id}")])
             keyboard.append([InlineKeyboardButton("❌ Отказаться", callback_data=f"unclaim_{gift_id}")])
-        else:
+        elif not is_fully_funded and gift_price and gift_price >= MIN_CONTRIBUTION * 2:
+            # Can join only if not fully funded
             keyboard.append([InlineKeyboardButton("👥 Присоединиться", callback_data=f"share_{gift_id}")])
     
     if gift['status'] not in ["already_has", "bought"]:
@@ -451,31 +509,76 @@ async def show_gift_details(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def claim_gift(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Claim a gift for yourself"""
+    """Claim a gift for yourself (buying solo)"""
     query = update.callback_query
-    await query.answer()
     
     gift_id = int(query.data.split("_")[1])
     user = update.effective_user
+    gift = db.get_gift(gift_id)
     
-    db.add_buyer(gift_id, user.id, user.full_name)
+    if not gift:
+        await query.answer("❌ Подарок не найден", show_alert=True)
+        return
+    
+    # Set amount to full price when claiming solo
+    amount = gift['price'] if gift['price'] else None
+    db.add_buyer(gift_id, user.id, user.full_name, amount)
     db.update_gift_status(gift_id, "claimed")
     
     await query.answer("✅ Отлично! Вы записались на этот подарок!", show_alert=True)
     
     # Refresh gift details
-    context.user_data['viewing_gift'] = gift_id
     query.data = f"gift_{gift_id}"
     await show_gift_details(update, context)
 
 
+def get_contribution_options(price: int, existing_pledged: int = 0) -> list:
+    """Calculate reasonable contribution options for a gift price"""
+    if not price or price <= 0:
+        return []
+    
+    remaining = price - existing_pledged
+    if remaining <= 0:
+        return []
+    
+    options = []
+    
+    # Find divisors of the remaining amount that are >= MIN_CONTRIBUTION
+    # and result in a reasonable number of contributors (2-10 people)
+    for num_people in range(2, 11):
+        share = remaining // num_people
+        if share >= MIN_CONTRIBUTION and remaining % num_people == 0:
+            if share not in options:
+                options.append(share)
+    
+    # Also add some round numbers that divide evenly
+    round_amounts = [1000, 1500, 2000, 2500, 3000, 4000, 5000, 7500, 10000, 15000, 20000]
+    for amount in round_amounts:
+        if amount >= MIN_CONTRIBUTION and amount <= remaining and remaining % amount == 0:
+            if amount not in options:
+                options.append(amount)
+    
+    # Sort and limit to 6 options
+    options = sorted(set(options))
+    
+    # Filter to keep reasonable range (not too small, not more than 50% of remaining)
+    options = [o for o in options if o <= remaining * 0.6 or o == remaining]
+    
+    return options[:6]
+
+
 async def share_gift(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Join shared purchase"""
+    """Join shared purchase - show contribution options"""
     query = update.callback_query
     await query.answer()
     
     gift_id = int(query.data.split("_")[1])
     user = update.effective_user
+    gift = db.get_gift(gift_id)
+    
+    if not gift:
+        await query.answer("❌ Подарок не найден", show_alert=True)
+        return
     
     # Check if already participating
     buyers = db.get_gift_buyers(gift_id)
@@ -483,25 +586,77 @@ async def share_gift(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer("Вы уже участвуете в покупке этого подарка!", show_alert=True)
         return
     
-    db.add_buyer(gift_id, user.id, user.full_name)
-    db.update_gift_status(gift_id, "claimed")
+    # Check if fully funded
+    total_pledged = sum(b['amount'] or 0 for b in buyers)
+    if gift['price'] and total_pledged >= gift['price']:
+        await query.answer("❌ Сумма уже полностью собрана!", show_alert=True)
+        return
+    
+    gift_price = gift['price'] or 0
+    remaining = gift_price - total_pledged
     
     context.user_data['contribution_gift_id'] = gift_id
     
-    keyboard = [
-        [InlineKeyboardButton("Пропустить", callback_data=f"skip_contribution_{gift_id}")]
-    ]
+    # Get contribution options
+    options = get_contribution_options(gift_price, total_pledged)
+    
+    keyboard = []
+    if options:
+        # Create rows of 2 buttons each
+        for i in range(0, len(options), 2):
+            row = []
+            for opt in options[i:i+2]:
+                num_people = remaining // opt
+                row.append(InlineKeyboardButton(
+                    f"{opt}₽ ({num_people} чел.)",
+                    callback_data=f"contrib_{gift_id}_{opt}"
+                ))
+            keyboard.append(row)
+    
+    keyboard.append([InlineKeyboardButton("❌ Отмена", callback_data=f"gift_{gift_id}")])
+    
+    remaining_text = f"{remaining}₽" if remaining != gift_price else f"{gift_price}₽"
+    already_text = f"\n\n💵 Уже собрано: {total_pledged}₽" if total_pledged > 0 else ""
     
     await query.edit_message_text(
-        "💰 Сколько вы готовы вложить? (в рублях)\n\n"
-        "Напишите сумму или нажмите 'Пропустить'",
-        reply_markup=InlineKeyboardMarkup(keyboard)
+        f"👥 *Скинуться на подарок*\n\n"
+        f"🎁 {escape_md(gift['name'])}\n"
+        f"💰 Цена: {escape_md(str(gift_price))}₽{escape_md(already_text)}\n"
+        f"📊 Осталось собрать: {escape_md(remaining_text)}\n\n"
+        f"Выберите сумму вашего взноса:",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode="MarkdownV2"
     )
-    return SETTING_CONTRIBUTION
+
+
+async def select_contribution(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle contribution amount selection"""
+    query = update.callback_query
+    
+    parts = query.data.split("_")
+    gift_id = int(parts[1])
+    amount = int(parts[2])
+    user = update.effective_user
+    
+    # Check if already participating
+    buyers = db.get_gift_buyers(gift_id)
+    if any(b['user_id'] == user.id for b in buyers):
+        await query.answer("Вы уже участвуете!", show_alert=True)
+        return
+    
+    # Add buyer with amount
+    db.add_buyer(gift_id, user.id, user.full_name, amount)
+    db.update_gift_status(gift_id, "claimed")
+    
+    await query.answer(f"✅ Отлично! Вы вложили {amount}₽", show_alert=True)
+    
+    # Show gift details
+    query.data = f"gift_{gift_id}"
+    await show_gift_details(update, context)
 
 
 async def set_contribution(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Set contribution amount"""
+    """Set contribution amount (legacy text input)"""
     user = update.effective_user
     gift_id = context.user_data.get('contribution_gift_id')
     
@@ -512,7 +667,7 @@ async def set_contribution(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         amount = int(update.message.text.replace(" ", "").replace("₽", ""))
         db.update_buyer_amount(gift_id, user.id, amount)
-        await update.message.reply_text(f"✅ Записано: {amount}₽")
+        await update.message.reply_text(f"✅ Отлично! Записано: {amount}₽")
     except ValueError:
         await update.message.reply_text("❌ Пожалуйста, введите число")
         return SETTING_CONTRIBUTION
@@ -524,7 +679,7 @@ async def set_contribution(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def skip_contribution(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Skip setting contribution amount"""
     query = update.callback_query
-    await query.answer("✅ Вы добавлены к покупке!")
+    await query.answer("✅ Вы добавлены к покупке!", show_alert=True)
     await show_main_menu(update, context)
     return ConversationHandler.END
 
@@ -532,7 +687,6 @@ async def skip_contribution(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def unclaim_gift(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Remove yourself from gift"""
     query = update.callback_query
-    await query.answer()
     
     gift_id = int(query.data.split("_")[1])
     user = update.effective_user
@@ -544,7 +698,7 @@ async def unclaim_gift(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not buyers:
         db.update_gift_status(gift_id, "available")
     
-    await query.answer("Вы отказались от покупки", show_alert=True)
+    await query.answer("✅ Вы успешно отказались от покупки", show_alert=True)
     
     query.data = f"gift_{gift_id}"
     await show_gift_details(update, context)
@@ -1227,18 +1381,6 @@ def main():
         ],
     )
     
-    # Conversation handler for contribution
-    contribution_handler = ConversationHandler(
-        entry_points=[CallbackQueryHandler(share_gift, pattern="^share_")],
-        states={
-            SETTING_CONTRIBUTION: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, set_contribution),
-                CallbackQueryHandler(skip_contribution, pattern="^skip_contribution_"),
-            ],
-        },
-        fallbacks=[CommandHandler("cancel", cancel)],
-    )
-    
     # Conversation handler for banning (manual ID input)
     ban_handler = ConversationHandler(
         entry_points=[CallbackQueryHandler(ban_manual_start, pattern="^ban_manual$")],
@@ -1287,7 +1429,6 @@ def main():
     application.add_handler(MessageHandler(filters.Document.ALL & filters.COMMAND, import_db))
     application.add_handler(CommandHandler("import", import_db))
     application.add_handler(add_gift_handler)
-    application.add_handler(contribution_handler)
     application.add_handler(ban_handler)
     application.add_handler(facts_handler)
     application.add_handler(broadcast_handler)
@@ -1312,6 +1453,8 @@ def main():
     application.add_handler(CallbackQueryHandler(admin_add_start, pattern="^admin_add$"))
     application.add_handler(CallbackQueryHandler(show_gift_details, pattern="^gift_"))
     application.add_handler(CallbackQueryHandler(claim_gift, pattern="^claim_"))
+    application.add_handler(CallbackQueryHandler(share_gift, pattern="^share_"))
+    application.add_handler(CallbackQueryHandler(select_contribution, pattern="^contrib_"))
     application.add_handler(CallbackQueryHandler(unclaim_gift, pattern="^unclaim_"))
     application.add_handler(CallbackQueryHandler(mark_bought, pattern="^bought_"))
     application.add_handler(CallbackQueryHandler(mark_already_has, pattern="^already_has_"))
