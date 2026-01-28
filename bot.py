@@ -24,6 +24,16 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+
+def escape_md(text: str) -> str:
+    """Escape Markdown special characters"""
+    if not text:
+        return ""
+    # Escape special Markdown characters
+    for char in ['_', '*', '`', '[', ']', '(', ')', '~', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']:
+        text = text.replace(char, f'\\{char}')
+    return text
+
 # Conversation states
 ADDING_GIFT_NAME, ADDING_GIFT_PRICE, ADDING_GIFT_CATEGORY = range(3)
 SETTING_CONTRIBUTION = 3
@@ -341,10 +351,11 @@ async def list_gifts(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 
                 buyer_info = ""
                 if buyers:
-                    names = [b['user_name'].split()[0] for b in buyers]
+                    names = [escape_md(b['user_name'].split()[0]) for b in buyers]
                     buyer_info = f" — {', '.join(names)}"
                 
-                text += f"{status} {gift['name']} (~{price_str}){buyer_info}\n"
+                gift_name_escaped = escape_md(gift['name'])
+                text += f"{status} {gift_name_escaped} \\(~{price_str}\\){buyer_info}\n"
                 keyboard.append([InlineKeyboardButton(
                     f"{status} {gift['name'][:30]}",
                     callback_data=f"gift_{gift['id']}"
@@ -354,12 +365,12 @@ async def list_gifts(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # Trim text if too long
     if len(text) > 4000:
-        text = text[:4000] + "\n\n... (список сокращён)"
+        text = text[:4000] + "\n\n\\.\\.\\. \\(список сокращён\\)"
     
     await query.edit_message_text(
         text, 
         reply_markup=InlineKeyboardMarkup(keyboard),
-        parse_mode="Markdown"
+        parse_mode="MarkdownV2"
     )
 
 
@@ -387,20 +398,25 @@ async def show_gift_details(update: Update, context: ContextTypes.DEFAULT_TYPE):
     price_str = f"{gift['price']}₽" if gift['price'] else "не указана"
     category = CATEGORIES.get(gift['category'], CATEGORIES['other'])
     
+    # Escape user-provided data
+    gift_name = escape_md(gift['name'])
+    added_by = escape_md(gift['added_by_name'])
+    
     text = (
-        f"🎁 *{gift['name']}*\n\n"
-        f"💰 Цена: ~{price_str}\n"
+        f"🎁 *{gift_name}*\n\n"
+        f"💰 Цена: ~{escape_md(price_str)}\n"
         f"📁 Категория: {category}\n"
         f"📊 Статус: {status} {status_text}\n"
-        f"💡 Добавил: {gift['added_by_name']}\n"
+        f"💡 Добавил: {added_by}\n"
     )
     
     buyers = db.get_gift_buyers(gift_id)
     if buyers:
         text += "\n👥 *Участники:*\n"
         for buyer in buyers:
+            buyer_name = escape_md(buyer['user_name'])
             amount = f" — {buyer['amount']}₽" if buyer['amount'] else ""
-            text += f"  • {buyer['user_name']}{amount}\n"
+            text += f"  • {buyer_name}{escape_md(amount)}\n"
     
     keyboard = []
     
@@ -423,6 +439,12 @@ async def show_gift_details(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard.append([InlineKeyboardButton("🗑 Удалить (админ)", callback_data=f"delete_{gift_id}")])
     
     keyboard.append([InlineKeyboardButton("🔙 К списку", callback_data="list_gifts")])
+    
+    await query.edit_message_text(
+        text,
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode="MarkdownV2"
+    )
     
     await query.edit_message_text(
         text,
@@ -647,12 +669,15 @@ async def add_gift_category(update: Update, context: ContextTypes.DEFAULT_TYPE):
         added_by_name=user.full_name
     )
     
+    gift_name = escape_md(context.user_data['new_gift_name'])
+    price_display = context.user_data.get('new_gift_price', 'не указана')
+    
     await query.edit_message_text(
-        f"🎉 *Идея добавлена!*\n\n"
-        f"🎁 {context.user_data['new_gift_name']}\n"
-        f"💰 {context.user_data.get('new_gift_price', 'не указана')}₽\n"
+        f"🎉 *Идея добавлена\\!*\n\n"
+        f"🎁 {gift_name}\n"
+        f"💰 {escape_md(str(price_display))}₽\n"
         f"📁 {CATEGORIES[category]}",
-        parse_mode="Markdown"
+        parse_mode="MarkdownV2"
     )
     
     # Clear user data
@@ -687,9 +712,10 @@ async def my_gifts(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for gift in gifts:
         status = STATUS_EMOJI.get(gift['status'], "🟢")
         price_str = f"{gift['price']}₽" if gift['price'] else "?"
-        amount = f" (ваш вклад: {gift['amount']}₽)" if gift.get('amount') else ""
+        amount = f" \\(ваш вклад: {gift['amount']}₽\\)" if gift.get('amount') else ""
         
-        text += f"{status} {gift['name']} (~{price_str}){amount}\n"
+        gift_name = escape_md(gift['name'])
+        text += f"{status} {gift_name} \\(~{escape_md(price_str)}\\){amount}\n"
         keyboard.append([InlineKeyboardButton(
             f"{status} {gift['name'][:30]}",
             callback_data=f"gift_{gift['id']}"
@@ -700,7 +726,7 @@ async def my_gifts(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.edit_message_text(
         text,
         reply_markup=InlineKeyboardMarkup(keyboard),
-        parse_mode="Markdown"
+        parse_mode="MarkdownV2"
     )
 
 
