@@ -344,7 +344,7 @@ async def list_gifts(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     for cat_key, cat_name in CATEGORIES.items():
         if cat_key in by_category:
-            text += f"\n{cat_name}\n"
+            text += f"\n{escape_md(cat_name)}\n"
             for gift in by_category[cat_key]:
                 status = STATUS_EMOJI.get(gift['status'], "🟢")
                 price_str = f"{gift['price']}₽" if gift['price'] else "цена?"
@@ -392,7 +392,7 @@ async def show_gift_details(update: Update, context: ContextTypes.DEFAULT_TYPE):
     status = STATUS_EMOJI.get(gift['status'], "🟢")
     status_text = {
         "available": "Свободен",
-        "claimed": "Кто-то покупает",
+        "claimed": "Кто\\-то покупает",  # Escaped hyphen
         "bought": "Уже куплен",
         "already_has": "Уже есть у именинника"
     }.get(gift['status'], "Свободен")
@@ -417,8 +417,8 @@ async def show_gift_details(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text += "\n👥 *Участники:*\n"
         for buyer in buyers:
             buyer_name = escape_md(buyer['user_name'])
-            amount = f" — {buyer['amount']}₽" if buyer['amount'] else ""
-            text += f"  • {buyer_name}{escape_md(amount)}\n"
+            amount = f" \\- {buyer['amount']}₽" if buyer['amount'] else ""
+            text += f"  • {buyer_name}{amount}\n"
     
     keyboard = []
     
