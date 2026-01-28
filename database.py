@@ -91,6 +91,16 @@ class Database:
                     last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
+            
+            # Facts about the birthday person
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS birthday_facts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER,
+                    fact_text TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
     
     # ============ GIFT OPERATIONS ============
     
@@ -355,3 +365,38 @@ class Database:
             """, (username,))
             row = cursor.fetchone()
             return dict(row) if row else None
+    
+    # ============ BIRTHDAY FACTS ============
+    
+    def add_fact(self, user_id: int, fact_text: str) -> int:
+        """Add a fact about the birthday person"""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO birthday_facts (user_id, fact_text)
+                VALUES (?, ?)
+            """, (user_id, fact_text))
+            return cursor.lastrowid
+    
+    def get_all_facts(self) -> List[Dict[str, Any]]:
+        """Get all facts about the birthday person"""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT * FROM birthday_facts
+                ORDER BY created_at DESC
+            """)
+            return [dict(row) for row in cursor.fetchall()]
+    
+    def get_facts_count(self) -> int:
+        """Get total number of facts"""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(*) FROM birthday_facts")
+            return cursor.fetchone()[0]
+    
+    def delete_fact(self, fact_id: int):
+        """Delete a fact (admin only)"""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM birthday_facts WHERE id = ?", (fact_id,))
