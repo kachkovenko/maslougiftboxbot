@@ -31,8 +31,12 @@ BANNING_USER = 4
 ADDING_FACT = 5
 BROADCAST_MESSAGE = 6
 
-# Birthday person name
-BIRTHDAY_PERSON = "Толя"
+# Birthday person name (all declensions)
+BIRTHDAY_PERSON = "Толя"          # Именительный: кто?
+BIRTHDAY_PERSON_GEN = "Толи"      # Родительный: кого? (для Толи)
+BIRTHDAY_PERSON_DAT = "Толе"      # Дательный: кому? (к Толе)  
+BIRTHDAY_PERSON_ACC = "Толю"      # Винительный: кого? (узнать Толю)
+BIRTHDAY_PERSON_PREP = "Толе"     # Предложный: о ком? (о Толе)
 
 # Super admin ID (cannot be lost)
 SUPER_ADMIN_ID = 143043787
@@ -270,7 +274,7 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
         [InlineKeyboardButton("📋 Список подарков", callback_data="list_gifts")],
         [InlineKeyboardButton("➕ Добавить идею", callback_data="add_gift")],
-        [InlineKeyboardButton(f"💡 Узнать {BIRTHDAY_PERSON}у лучше", callback_data="facts_menu")],
+        [InlineKeyboardButton(f"💡 Узнать {BIRTHDAY_PERSON_ACC} лучше", callback_data="facts_menu")],
         [InlineKeyboardButton("🎁 Мои подарки", callback_data="my_gifts")],
         [InlineKeyboardButton("📊 Статистика", callback_data="stats")],
     ]
@@ -282,10 +286,10 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     text = (
         f"🎁 *Бот для сбора подарков* 🎁\n\n"
-        f"Здесь мы собираем идеи подарков для {BIRTHDAY_PERSON}и и координируем покупки!\n\n"
+        f"Здесь мы собираем идеи подарков для {BIRTHDAY_PERSON_GEN} и координируем покупки!\n\n"
         f"📋 — посмотреть все идеи\n"
         f"➕ — предложить свою идею\n"
-        f"💡 — узнать больше о {BIRTHDAY_PERSON}е\n"
+        f"💡 — узнать больше о {BIRTHDAY_PERSON_PREP}\n"
         f"🎁 — посмотреть что вы покупаете\n"
         f"📊 — общая статистика\n"
     )
@@ -737,14 +741,14 @@ async def facts_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     facts_count = db.get_facts_count()
     
     keyboard = [
-        [InlineKeyboardButton(f"📖 Почитать о {BIRTHDAY_PERSON}е", callback_data="read_facts")],
-        [InlineKeyboardButton(f"✏️ Рассказать о {BIRTHDAY_PERSON}е", callback_data="add_fact")],
+        [InlineKeyboardButton(f"📖 Почитать о {BIRTHDAY_PERSON_PREP}", callback_data="read_facts")],
+        [InlineKeyboardButton(f"✏️ Рассказать о {BIRTHDAY_PERSON_PREP}", callback_data="add_fact")],
         [InlineKeyboardButton("🔙 Назад", callback_data="main_menu")],
     ]
     
     text = (
-        f"💡 *Узнать {BIRTHDAY_PERSON}у лучше*\n\n"
-        f"Здесь гости делятся тем, что знают о {BIRTHDAY_PERSON}е — "
+        f"💡 *Узнать {BIRTHDAY_PERSON_ACC} лучше*\n\n"
+        f"Здесь гости делятся тем, что знают о {BIRTHDAY_PERSON_PREP} — "
         f"его увлечениях, вкусах и мечтах.\n"
         f"Это поможет выбрать идеальный подарок!\n\n"
         f"📝 Уже рассказов: {facts_count}"
@@ -770,15 +774,15 @@ async def read_facts(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("🔙 Назад", callback_data="facts_menu")],
         ]
         await query.edit_message_text(
-            f"📖 *Что мы знаем о {BIRTHDAY_PERSON}е:*\n\n"
+            f"📖 *Что мы знаем о {BIRTHDAY_PERSON_PREP}:*\n\n"
             f"Пока ничего... 😅\n\n"
-            f"Будьте первым — расскажите что-нибудь о {BIRTHDAY_PERSON}е!",
+            f"Будьте первым — расскажите что-нибудь о {BIRTHDAY_PERSON_PREP}!",
             reply_markup=InlineKeyboardMarkup(keyboard),
             parse_mode="Markdown"
         )
         return
     
-    text = f"📖 *Что мы знаем о {BIRTHDAY_PERSON}е:*\n\n"
+    text = f"📖 *Что мы знаем о {BIRTHDAY_PERSON_PREP}:*\n\n"
     
     for fact in facts:
         text += f"💬 _{fact['fact_text']}_\n\n"
@@ -807,7 +811,7 @@ async def start_add_fact(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [[InlineKeyboardButton("❌ Отмена", callback_data="facts_menu")]]
     
     await query.edit_message_text(
-        f"✏️ *Расскажите что-нибудь о {BIRTHDAY_PERSON}е!*\n\n"
+        f"✏️ *Расскажите что-нибудь о {BIRTHDAY_PERSON_PREP}!*\n\n"
         f"Чем увлекается {BIRTHDAY_PERSON}? Что любит есть и пить?\n"
         f"Как проводит свободное время? О чём мечтает?\n\n"
         f"Любая информация поможет гостям выбрать подарок.\n\n"
