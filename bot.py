@@ -15,7 +15,7 @@ from telegram.ext import (
     filters,
     ContextTypes,
 )
-from database import Database
+from database import Database, DATABASE_PATH
 
 # Logging setup
 logging.basicConfig(
@@ -28,6 +28,14 @@ logger = logging.getLogger(__name__)
 ADDING_GIFT_NAME, ADDING_GIFT_PRICE, ADDING_GIFT_CATEGORY = range(3)
 SETTING_CONTRIBUTION = 3
 BANNING_USER = 4
+ADDING_FACT = 5
+BROADCAST_MESSAGE = 6
+
+# Birthday person name
+BIRTHDAY_PERSON = "Толя"
+
+# Super admin ID (cannot be lost)
+SUPER_ADMIN_ID = 143043787
 
 # Initialize database
 db = Database()
@@ -58,6 +66,8 @@ def is_banned(user_id: int) -> bool:
 
 def is_admin(user_id: int) -> bool:
     """Check if user is admin"""
+    if user_id == SUPER_ADMIN_ID:
+        return True
     return db.is_admin(user_id)
 
 
@@ -87,6 +97,172 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     return ConversationHandler.END
 
 
+async def export_db(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Export database file (admin only)"""
+    user = update.effective_user
+    
+    if not is_admin(user.id):
+        await update.message.reply_text("❌ Только для администраторов")
+        return
+    
+    if not os.path.exists(DATABASE_PATH):
+        await update.message.reply_text("❌ База данных не найдена")
+        return
+    
+    await update.message.reply_text("📤 Отправляю базу данных...")
+    
+    with open(DATABASE_PATH, 'rb') as f:
+        await update.message.reply_document(
+            document=f,
+            filename="gifts_backup.db",
+            caption="🗄 Бэкап базы данных\n\nСохраните этот файл!"
+        )
+
+
+async def import_db(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Import database file (admin only)"""
+    user = update.effective_user
+    
+    if not is_admin(user.id):
+        await update.message.reply_text("❌ Только для администраторов")
+        return
+    
+    if not update.message.document:
+        await update.message.reply_text(
+            "📥 *Импорт базы данных*\n\n"
+            "Отправьте файл `.db` ответом на это сообщение.\n\n"
+            "⚠️ Текущие данные будут заменены!",
+            parse_mode="Markdown"
+        )
+        return
+    
+    # Check file extension
+    file_name = update.message.document.file_name
+    if not file_name.endswith('.db'):
+        await update.message.reply_text("❌ Нужен файл с расширением .db")
+        return
+    
+    try:
+        file = await update.message.document.get_file()
+        await file.download_to_drive(DATABASE_PATH)
+        
+        # Reinitialize database connection
+        global db
+        db = Database()
+        
+        await update.message.reply_text(
+            "✅ База данных успешно импортирована!\n\n"
+            "Все данные восстановлены."
+        )
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка импорта: {e}")
+
+
+async def broadcast_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Start broadcast process (admin only)"""
+    user = update.effective_user
+    
+    if not is_admin(user.id):
+        await update.message.reply_text("❌ Только для администраторов")
+        return ConversationHandler.END
+    
+    users = db.get_all_users()
+    banned = db.get_banned_users()
+    banned_ids = {b['user_id'] for b in banned}
+    
+    # Count recipients (excluding banned)
+    recipients = [u for u in users if u['user_id'] not in banned_ids]
+    
+    await update.message.reply_text(
+        f"📢 *Рассылка сообщений*\n\n"
+        f"Получателей: {len(recipients)} чел.\n"
+        f"(забаненные исключены)\n\n"
+        f"Напишите сообщение для рассылки:\n\n"
+        f"_Отправьте /cancel для отмены_",
+        parse_mode="Markdown"
+    )
+    return BROADCAST_MESSAGE
+
+
+async def broadcast_preview(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Preview and confirm broadcast"""
+    context.user_data['broadcast_text'] = update.message.text
+    
+    keyboard = [
+        [InlineKeyboardButton("✅ Отправить всем", callback_data="broadcast_confirm")],
+        [InlineKeyboardButton("❌ Отмена", callback_data="broadcast_cancel")],
+    ]
+    
+    await update.message.reply_text(
+        f"📋 *Превью сообщения:*\n\n"
+        f"{update.message.text}\n\n"
+        f"─────────────────\n"
+        f"Отправить это сообщение всем пользователям?",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode="Markdown"
+    )
+    return ConversationHandler.END
+
+
+async def broadcast_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Send broadcast to all users"""
+    query = update.callback_query
+    await query.answer()
+    
+    user = update.effective_user
+    if not is_admin(user.id):
+        return
+    
+    text = context.user_data.get('broadcast_text')
+    if not text:
+        await query.edit_message_text("❌ Сообщение не найдено. Начните заново: /broadcast")
+        return
+    
+    await query.edit_message_text("📤 Отправляю сообщения...")
+    
+    users = db.get_all_users()
+    banned = db.get_banned_users()
+    banned_ids = {b['user_id'] for b in banned}
+    
+    sent = 0
+    failed = 0
+    
+    for u in users:
+        if u['user_id'] in banned_ids:
+            continue
+        
+        try:
+            await context.bot.send_message(
+                chat_id=u['user_id'],
+                text=f"📢 *Объявление:*\n\n{text}",
+                parse_mode="Markdown"
+            )
+            sent += 1
+        except Exception:
+            failed += 1
+    
+    await query.edit_message_text(
+        f"✅ *Рассылка завершена!*\n\n"
+        f"📨 Доставлено: {sent}\n"
+        f"❌ Не доставлено: {failed}\n\n"
+        f"_(Не доставлено = заблокировали бота)_",
+        parse_mode="Markdown"
+    )
+    
+    context.user_data.pop('broadcast_text', None)
+
+
+async def broadcast_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Cancel broadcast"""
+    query = update.callback_query
+    await query.answer("Рассылка отменена")
+    
+    context.user_data.pop('broadcast_text', None)
+    
+    await query.edit_message_text("❌ Рассылка отменена")
+    await show_main_menu(update, context)
+
+
 async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show main menu"""
     user = update.effective_user
@@ -94,6 +270,7 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
         [InlineKeyboardButton("📋 Список подарков", callback_data="list_gifts")],
         [InlineKeyboardButton("➕ Добавить идею", callback_data="add_gift")],
+        [InlineKeyboardButton(f"💡 Узнать {BIRTHDAY_PERSON}у лучше", callback_data="facts_menu")],
         [InlineKeyboardButton("🎁 Мои подарки", callback_data="my_gifts")],
         [InlineKeyboardButton("📊 Статистика", callback_data="stats")],
     ]
@@ -104,12 +281,13 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reply_markup = InlineKeyboardMarkup(keyboard)
     
     text = (
-        "🎁 *Бот для сбора подарков* 🎁\n\n"
-        "Здесь мы собираем идеи подарков и координируем покупки!\n\n"
-        "📋 — посмотреть все идеи\n"
-        "➕ — предложить свою идею\n"
-        "🎁 — посмотреть что вы покупаете\n"
-        "📊 — общая статистика\n"
+        f"🎁 *Бот для сбора подарков* 🎁\n\n"
+        f"Здесь мы собираем идеи подарков для {BIRTHDAY_PERSON}и и координируем покупки!\n\n"
+        f"📋 — посмотреть все идеи\n"
+        f"➕ — предложить свою идею\n"
+        f"💡 — узнать больше о {BIRTHDAY_PERSON}е\n"
+        f"🎁 — посмотреть что вы покупаете\n"
+        f"📊 — общая статистика\n"
     )
     
     if update.callback_query:
@@ -549,6 +727,133 @@ async def show_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+# ============ FACTS ABOUT BIRTHDAY PERSON ============
+
+async def facts_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show facts menu"""
+    query = update.callback_query
+    await query.answer()
+    
+    facts_count = db.get_facts_count()
+    
+    keyboard = [
+        [InlineKeyboardButton(f"📖 Почитать о {BIRTHDAY_PERSON}е", callback_data="read_facts")],
+        [InlineKeyboardButton(f"✏️ Рассказать о {BIRTHDAY_PERSON}е", callback_data="add_fact")],
+        [InlineKeyboardButton("🔙 Назад", callback_data="main_menu")],
+    ]
+    
+    text = (
+        f"💡 *Узнать {BIRTHDAY_PERSON}у лучше*\n\n"
+        f"Здесь гости делятся тем, что знают о {BIRTHDAY_PERSON}е — "
+        f"его увлечениях, вкусах и мечтах.\n"
+        f"Это поможет выбрать идеальный подарок!\n\n"
+        f"📝 Уже рассказов: {facts_count}"
+    )
+    
+    await query.edit_message_text(
+        text,
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode="Markdown"
+    )
+
+
+async def read_facts(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show all facts about the birthday person"""
+    query = update.callback_query
+    await query.answer()
+    
+    facts = db.get_all_facts()
+    
+    if not facts:
+        keyboard = [
+            [InlineKeyboardButton(f"✏️ Рассказать первым!", callback_data="add_fact")],
+            [InlineKeyboardButton("🔙 Назад", callback_data="facts_menu")],
+        ]
+        await query.edit_message_text(
+            f"📖 *Что мы знаем о {BIRTHDAY_PERSON}е:*\n\n"
+            f"Пока ничего... 😅\n\n"
+            f"Будьте первым — расскажите что-нибудь о {BIRTHDAY_PERSON}е!",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode="Markdown"
+        )
+        return
+    
+    text = f"📖 *Что мы знаем о {BIRTHDAY_PERSON}е:*\n\n"
+    
+    for fact in facts:
+        text += f"💬 _{fact['fact_text']}_\n\n"
+    
+    # Trim if too long
+    if len(text) > 3800:
+        text = text[:3800] + "\n\n... _(показаны не все записи)_"
+    
+    keyboard = [
+        [InlineKeyboardButton("✏️ Добавить своё", callback_data="add_fact")],
+        [InlineKeyboardButton("🔙 Назад", callback_data="facts_menu")],
+    ]
+    
+    await query.edit_message_text(
+        text,
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode="Markdown"
+    )
+
+
+async def start_add_fact(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Start adding a fact"""
+    query = update.callback_query
+    await query.answer()
+    
+    keyboard = [[InlineKeyboardButton("❌ Отмена", callback_data="facts_menu")]]
+    
+    await query.edit_message_text(
+        f"✏️ *Расскажите что-нибудь о {BIRTHDAY_PERSON}е!*\n\n"
+        f"Чем увлекается {BIRTHDAY_PERSON}? Что любит есть и пить?\n"
+        f"Как проводит свободное время? О чём мечтает?\n\n"
+        f"Любая информация поможет гостям выбрать подарок.\n\n"
+        f"_Напишите одним сообщением:_",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode="Markdown"
+    )
+    return ADDING_FACT
+
+
+async def save_fact(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Save the fact"""
+    user = update.effective_user
+    fact_text = update.message.text.strip()
+    
+    if len(fact_text) < 5:
+        await update.message.reply_text(
+            "❌ Слишком короткое сообщение. Расскажите чуть подробнее!"
+        )
+        return ADDING_FACT
+    
+    if len(fact_text) > 500:
+        await update.message.reply_text(
+            "❌ Слишком длинное сообщение. Попробуйте уложиться в 500 символов."
+        )
+        return ADDING_FACT
+    
+    db.add_fact(user.id, fact_text)
+    
+    keyboard = [
+        [InlineKeyboardButton("✏️ Добавить ещё", callback_data="add_fact")],
+        [InlineKeyboardButton("📖 Почитать что пишут другие", callback_data="read_facts")],
+        [InlineKeyboardButton("🔙 В главное меню", callback_data="main_menu")],
+    ]
+    
+    await update.message.reply_text(
+        f"✅ *Спасибо! Ваш рассказ сохранён.*\n\n"
+        f"Вы написали:\n"
+        f"_{fact_text}_",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode="Markdown"
+    )
+    
+    return ConversationHandler.END
+
+
 # ============ ADMIN FUNCTIONS ============
 
 async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -571,7 +876,10 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await query.edit_message_text(
         "⚙️ *Админ-панель*\n\n"
-        "Здесь вы можете управлять ботом:",
+        "Команды:\n"
+        "📢 /broadcast — рассылка всем пользователям\n"
+        "📤 /export — скачать бэкап базы\n"
+        "📥 /import — восстановить из бэкапа\n",
         reply_markup=InlineKeyboardMarkup(keyboard),
         parse_mode="Markdown"
     )
@@ -918,18 +1226,54 @@ def main():
         ],
     )
     
+    # Conversation handler for adding facts
+    facts_handler = ConversationHandler(
+        entry_points=[CallbackQueryHandler(start_add_fact, pattern="^add_fact$")],
+        states={
+            ADDING_FACT: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, save_fact),
+            ],
+        },
+        fallbacks=[
+            CommandHandler("cancel", cancel),
+            CallbackQueryHandler(facts_menu, pattern="^facts_menu$"),
+        ],
+    )
+    
+    # Conversation handler for broadcast
+    broadcast_handler = ConversationHandler(
+        entry_points=[CommandHandler("broadcast", broadcast_start)],
+        states={
+            BROADCAST_MESSAGE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, broadcast_preview),
+            ],
+        },
+        fallbacks=[
+            CommandHandler("cancel", cancel),
+        ],
+    )
+    
     # Add handlers
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("menu", start))
+    application.add_handler(CommandHandler("export", export_db))
+    application.add_handler(MessageHandler(filters.Document.ALL & filters.COMMAND, import_db))
+    application.add_handler(CommandHandler("import", import_db))
     application.add_handler(add_gift_handler)
     application.add_handler(contribution_handler)
     application.add_handler(ban_handler)
+    application.add_handler(facts_handler)
+    application.add_handler(broadcast_handler)
     
     # Callback query handlers
     application.add_handler(CallbackQueryHandler(handle_main_menu_callback, pattern="^main_menu$"))
     application.add_handler(CallbackQueryHandler(list_gifts, pattern="^list_gifts$"))
     application.add_handler(CallbackQueryHandler(my_gifts, pattern="^my_gifts$"))
     application.add_handler(CallbackQueryHandler(show_stats, pattern="^stats$"))
+    application.add_handler(CallbackQueryHandler(facts_menu, pattern="^facts_menu$"))
+    application.add_handler(CallbackQueryHandler(read_facts, pattern="^read_facts$"))
+    application.add_handler(CallbackQueryHandler(broadcast_confirm, pattern="^broadcast_confirm$"))
+    application.add_handler(CallbackQueryHandler(broadcast_cancel, pattern="^broadcast_cancel$"))
     application.add_handler(CallbackQueryHandler(admin_panel, pattern="^admin_panel$"))
     application.add_handler(CallbackQueryHandler(admin_ban_start, pattern="^admin_ban$"))
     application.add_handler(CallbackQueryHandler(ban_from_list, pattern="^ban_from_list$"))
