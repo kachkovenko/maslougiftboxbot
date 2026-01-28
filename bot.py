@@ -65,6 +65,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Start command handler"""
     user = update.effective_user
     
+    # Track this user (before ban check so we can ban them later if needed!)
+    db.track_user(user.id, user.username, user.full_name)
+    
     if is_banned(user.id):
         await update.message.reply_text(
             "🎂 Привет, именинник(ца)! 🎂\n\n"
@@ -575,16 +578,137 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def admin_ban_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Start banning process"""
+    """Start banning process - show options"""
     query = update.callback_query
     await query.answer()
     
-    keyboard = [[InlineKeyboardButton("❌ Отмена", callback_data="admin_panel")]]
+    keyboard = [
+        [InlineKeyboardButton("📋 Выбрать из списка", callback_data="ban_from_list")],
+        [InlineKeyboardButton("✏️ Ввести ID вручную", callback_data="ban_manual")],
+        [InlineKeyboardButton("🔙 Назад", callback_data="admin_panel")],
+    ]
     
     await query.edit_message_text(
         "🚫 *Забанить именинника*\n\n"
-        "Перешлите сюда любое сообщение от именинника,\n"
-        "или отправьте его @username или ID.",
+        "Выберите способ:\n\n"
+        "📋 *Из списка* — выбрать из пользователей, которые уже писали боту\n"
+        "✏️ *Вручную* — ввести Telegram ID\n\n"
+        "💡 _Совет: попросите именинника написать боту /start до того, "
+        "как вы его забаните — тогда он появится в списке_",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode="Markdown"
+    )
+    return ConversationHandler.END
+
+
+async def ban_from_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show list of users to ban"""
+    query = update.callback_query
+    await query.answer()
+    
+    users = db.get_all_users()
+    
+    if not users:
+        keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="admin_ban")]]
+        await query.edit_message_text(
+            "📋 Список пуст!\n\n"
+            "Пока никто не писал боту.\n"
+            "Попросите именинника написать /start",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return
+    
+    keyboard = []
+    for u in users[:20]:  # Limit to 20 users
+        display_name = u['full_name'] or u['username'] or f"ID: {u['user_id']}"
+        username_str = f" (@{u['username']})" if u['username'] else ""
+        keyboard.append([InlineKeyboardButton(
+            f"🚫 {display_name}{username_str}",
+            callback_data=f"confirm_ban_{u['user_id']}"
+        )])
+    
+    keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="admin_ban")])
+    
+    await query.edit_message_text(
+        "📋 *Выберите кого забанить:*\n\n"
+        "_Это пользователи, которые писали боту_",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode="Markdown"
+    )
+
+
+async def confirm_ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Confirm ban action"""
+    query = update.callback_query
+    await query.answer()
+    
+    user_id = int(query.data.split("_")[2])
+    context.user_data['ban_target_id'] = user_id
+    
+    # Try to get user info
+    users = db.get_all_users()
+    target_user = next((u for u in users if u['user_id'] == user_id), None)
+    
+    if target_user:
+        name = target_user['full_name'] or target_user['username'] or str(user_id)
+    else:
+        name = str(user_id)
+    
+    keyboard = [
+        [InlineKeyboardButton("✅ Да, забанить!", callback_data=f"do_ban_{user_id}")],
+        [InlineKeyboardButton("❌ Отмена", callback_data="ban_from_list")],
+    ]
+    
+    await query.edit_message_text(
+        f"⚠️ *Подтверждение*\n\n"
+        f"Вы уверены, что хотите забанить:\n"
+        f"👤 *{name}*\n"
+        f"🆔 `{user_id}`\n\n"
+        f"Этот пользователь больше не сможет пользоваться ботом.",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode="Markdown"
+    )
+
+
+async def do_ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Actually perform the ban"""
+    query = update.callback_query
+    await query.answer()
+    
+    user_id = int(query.data.split("_")[2])
+    
+    # Get user info for the name
+    users = db.get_all_users()
+    target_user = next((u for u in users if u['user_id'] == user_id), None)
+    name = target_user['full_name'] if target_user else "Пользователь"
+    
+    db.ban_user(user_id, name)
+    
+    await query.edit_message_text(
+        f"✅ *Готово!*\n\n"
+        f"Пользователь *{name}* забанен.\n"
+        f"Теперь он не сможет видеть список подарков!",
+        parse_mode="Markdown"
+    )
+    
+    # Return to admin panel after a moment
+    await show_main_menu(update, context)
+
+
+async def ban_manual_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Start manual ban input"""
+    query = update.callback_query
+    await query.answer()
+    
+    keyboard = [[InlineKeyboardButton("❌ Отмена", callback_data="admin_ban")]]
+    
+    await query.edit_message_text(
+        "✏️ *Ввод ID вручную*\n\n"
+        "Отправьте Telegram ID пользователя (только цифры).\n\n"
+        "💡 _Как узнать ID:_\n"
+        "1. Именинник пишет боту @userinfobot\n"
+        "2. Бот присылает его ID\n"
+        "3. Именинник говорит вам этот ID",
         reply_markup=InlineKeyboardMarkup(keyboard),
         parse_mode="Markdown"
     )
@@ -592,37 +716,37 @@ async def admin_ban_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def admin_ban_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Ban a user"""
+    """Ban a user by ID input"""
     user = update.effective_user
     if not is_admin(user.id):
         return ConversationHandler.END
     
-    target_id = None
-    target_name = "Пользователь"
+    text = update.message.text.strip()
     
-    # Check if forwarded message
-    if update.message.forward_from:
-        target_id = update.message.forward_from.id
-        target_name = update.message.forward_from.full_name
-    elif update.message.text:
-        text = update.message.text.strip()
-        # Try to parse as ID
-        try:
-            target_id = int(text)
-        except ValueError:
-            # Try to parse as username (won't work without user interaction)
-            await update.message.reply_text(
-                "❌ Не удалось определить пользователя.\n"
-                "Лучше перешлите его сообщение."
-            )
-            return BANNING_USER
-    
-    if target_id:
-        db.ban_user(target_id, target_name)
+    # Try to parse as ID
+    try:
+        target_id = int(text)
+    except ValueError:
         await update.message.reply_text(
-            f"✅ Пользователь {target_name} (ID: {target_id}) забанен!\n"
-            "Теперь он не сможет пользоваться ботом."
+            "❌ Это не похоже на ID.\n\n"
+            "ID состоит только из цифр, например: `123456789`\n"
+            "Попробуйте ещё раз или нажмите Отмена.",
+            parse_mode="Markdown"
         )
+        return BANNING_USER
+    
+    # Check if trying to ban themselves
+    if target_id == user.id:
+        await update.message.reply_text("❌ Вы не можете забанить самого себя!")
+        return BANNING_USER
+    
+    db.ban_user(target_id, f"ID: {target_id}")
+    
+    await update.message.reply_text(
+        f"✅ Пользователь с ID `{target_id}` забанен!\n"
+        "Теперь он не сможет пользоваться ботом.",
+        parse_mode="Markdown"
+    )
     
     await show_main_menu(update, context)
     return ConversationHandler.END
@@ -780,17 +904,17 @@ def main():
         fallbacks=[CommandHandler("cancel", cancel)],
     )
     
-    # Conversation handler for banning
+    # Conversation handler for banning (manual ID input)
     ban_handler = ConversationHandler(
-        entry_points=[CallbackQueryHandler(admin_ban_start, pattern="^admin_ban$")],
+        entry_points=[CallbackQueryHandler(ban_manual_start, pattern="^ban_manual$")],
         states={
             BANNING_USER: [
-                MessageHandler(filters.ALL & ~filters.COMMAND, admin_ban_user),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, admin_ban_user),
             ],
         },
         fallbacks=[
             CommandHandler("cancel", cancel),
-            CallbackQueryHandler(admin_panel, pattern="^admin_panel$"),
+            CallbackQueryHandler(admin_ban_start, pattern="^admin_ban$"),
         ],
     )
     
@@ -807,6 +931,10 @@ def main():
     application.add_handler(CallbackQueryHandler(my_gifts, pattern="^my_gifts$"))
     application.add_handler(CallbackQueryHandler(show_stats, pattern="^stats$"))
     application.add_handler(CallbackQueryHandler(admin_panel, pattern="^admin_panel$"))
+    application.add_handler(CallbackQueryHandler(admin_ban_start, pattern="^admin_ban$"))
+    application.add_handler(CallbackQueryHandler(ban_from_list, pattern="^ban_from_list$"))
+    application.add_handler(CallbackQueryHandler(confirm_ban, pattern="^confirm_ban_"))
+    application.add_handler(CallbackQueryHandler(do_ban, pattern="^do_ban_"))
     application.add_handler(CallbackQueryHandler(admin_unban, pattern="^admin_unban$"))
     application.add_handler(CallbackQueryHandler(do_unban, pattern="^unban_"))
     application.add_handler(CallbackQueryHandler(admin_banned_list, pattern="^admin_banned_list$"))
