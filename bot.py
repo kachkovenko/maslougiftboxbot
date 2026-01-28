@@ -371,7 +371,8 @@ async def list_gifts(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.edit_message_text(
         text, 
         reply_markup=InlineKeyboardMarkup(keyboard),
-        parse_mode="MarkdownV2"
+        parse_mode="MarkdownV2",
+        disable_web_page_preview=True
     )
 
 
@@ -444,13 +445,8 @@ async def show_gift_details(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.edit_message_text(
         text,
         reply_markup=InlineKeyboardMarkup(keyboard),
-        parse_mode="MarkdownV2"
-    )
-    
-    await query.edit_message_text(
-        text,
-        reply_markup=InlineKeyboardMarkup(keyboard),
-        parse_mode="Markdown"
+        parse_mode="MarkdownV2",
+        disable_web_page_preview=True
     )
 
 
