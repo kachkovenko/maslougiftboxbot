@@ -80,6 +80,17 @@ class Database:
                     added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
+            
+            # Users table (track all users who interact with the bot)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS users (
+                    user_id INTEGER PRIMARY KEY,
+                    username TEXT,
+                    full_name TEXT,
+                    first_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
     
     # ============ GIFT OPERATIONS ============
     
@@ -304,3 +315,43 @@ class Database:
                 'participants': participants or 0,
                 'total_amount': total_amount or 0
             }
+    
+    # ============ USER TRACKING ============
+    
+    def track_user(self, user_id: int, username: str = None, full_name: str = None):
+        """Track a user who interacts with the bot"""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO users (user_id, username, full_name)
+                VALUES (?, ?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    username = COALESCE(excluded.username, users.username),
+                    full_name = COALESCE(excluded.full_name, users.full_name),
+                    last_seen = CURRENT_TIMESTAMP
+            """, (user_id, username, full_name))
+    
+    def get_all_users(self) -> List[Dict[str, Any]]:
+        """Get all tracked users (excluding banned and admins)"""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT u.* FROM users u
+                WHERE u.user_id NOT IN (SELECT user_id FROM banned_users)
+                AND u.user_id NOT IN (SELECT user_id FROM admins)
+                ORDER BY u.last_seen DESC
+            """)
+            return [dict(row) for row in cursor.fetchall()]
+    
+    def get_user_by_username(self, username: str) -> Optional[Dict[str, Any]]:
+        """Find user by username"""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            # Remove @ if present
+            username = username.lstrip('@').lower()
+            cursor.execute("""
+                SELECT * FROM users 
+                WHERE LOWER(username) = ?
+            """, (username,))
+            row = cursor.fetchone()
+            return dict(row) if row else None
