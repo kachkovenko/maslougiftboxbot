@@ -78,6 +78,9 @@ STATUS_EMOJI = {
 # Minimum contribution amount
 MIN_CONTRIBUTION = 1000  # Минимальный взнос 1000₽
 
+# Maximum number of contributors for shared purchases
+MAX_CONTRIBUTORS = 5  # Максимум 5 человек скидываются на один подарок
+
 
 def is_banned(user_id: int) -> bool:
     """Check if user is banned (the birthday person)"""
@@ -359,18 +362,16 @@ async def list_gifts(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     status = STATUS_EMOJI.get(gift['status'], "🟢")
                 elif gift['status'] == "claimed" and buyers:
                     total_pledged = sum(b['amount'] or 0 for b in buyers)
-                    if len(buyers) > 1:
-                        # Multiple people sharing
-                        if gift['price'] and total_pledged >= gift['price']:
-                            status = "🔴"  # Fully funded
-                        else:
-                            status = "👥"  # Sharing, not complete
+                    gift_price = gift['price'] or 0
+
+                    # Check if fully funded
+                    if gift_price > 0 and total_pledged >= gift_price:
+                        status = "🔴"  # Fully funded
+                    # Check if it's a shared purchase (any buyer contributed less than full price)
+                    elif any(b['amount'] and b['amount'] < gift_price for b in buyers):
+                        status = "👥"  # Sharing (even if only one person so far)
                     else:
-                        # Single buyer
-                        if gift['price'] and total_pledged >= gift['price']:
-                            status = "🔴"  # Fully funded
-                        else:
-                            status = "🟡"  # Single claimer
+                        status = "🟡"  # Single buyer who will buy solo
                 else:
                     status = STATUS_EMOJI.get(gift['status'], "🟢")
                 
@@ -425,8 +426,10 @@ async def show_gift_details(update: Update, context: ContextTypes.DEFAULT_TYPE):
     total_pledged = sum(b['amount'] or 0 for b in buyers)
     gift_price = gift['price'] or 0
     is_fully_funded = gift_price > 0 and total_pledged >= gift_price
-    is_shared = len(buyers) > 1
     
+    # Check if it's a shared purchase (any buyer contributed less than full price)
+    is_sharing = any(b['amount'] and b['amount'] < gift_price for b in buyers)
+
     # Determine status emoji and text
     if gift['status'] == "bought":
         status = "✅"
@@ -438,9 +441,12 @@ async def show_gift_details(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if is_fully_funded:
             status = "🔴"
             status_text = "Сумма собрана\\!"
-        elif is_shared:
+        elif is_sharing:
             status = "👥"
-            status_text = "Скидываются несколько человек"
+            if len(buyers) == 1:
+                status_text = "Ищут компанию для скидывания"
+            else:
+                status_text = "Скидываются несколько человек"
         else:
             status = "🟡"
             status_text = "Кто\\-то покупает"
@@ -533,100 +539,142 @@ async def claim_gift(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 def get_contribution_options(price: int, existing_pledged: int = 0) -> list:
-    """Calculate reasonable contribution options for a gift price"""
+    """Calculate reasonable contribution options for a gift price
+
+    Constraints:
+    - Minimum contribution: MIN_CONTRIBUTION (1000₽)
+    - Maximum contributors: MAX_CONTRIBUTORS (5 people)
+    - So minimum contribution is max(MIN_CONTRIBUTION, price / MAX_CONTRIBUTORS)
+    """
     if not price or price <= 0:
         return []
-    
+
     remaining = price - existing_pledged
     if remaining <= 0:
         return []
-    
+
+    # Minimum contribution to ensure no more than MAX_CONTRIBUTORS people
+    min_share = max(MIN_CONTRIBUTION, remaining // MAX_CONTRIBUTORS)
+
     options = []
-    
-    # Find divisors of the remaining amount that are >= MIN_CONTRIBUTION
-    # and result in a reasonable number of contributors (2-10 people)
-    for num_people in range(2, 11):
+
+    # Find divisors of the remaining amount that are >= min_share
+    # and result in a reasonable number of contributors (2-MAX_CONTRIBUTORS people)
+    for num_people in range(2, MAX_CONTRIBUTORS + 1):
         share = remaining // num_people
-        if share >= MIN_CONTRIBUTION and remaining % num_people == 0:
+        if share >= min_share and remaining % num_people == 0:
             if share not in options:
                 options.append(share)
-    
+
     # Also add some round numbers that divide evenly
     round_amounts = [1000, 1500, 2000, 2500, 3000, 4000, 5000, 7500, 10000, 15000, 20000]
     for amount in round_amounts:
-        if amount >= MIN_CONTRIBUTION and amount <= remaining and remaining % amount == 0:
-            if amount not in options:
+        if amount >= min_share and amount <= remaining and remaining % amount == 0:
+            # Check that this amount doesn't require more than MAX_CONTRIBUTORS people
+            num_people_needed = remaining // amount
+            if num_people_needed <= MAX_CONTRIBUTORS and amount not in options:
                 options.append(amount)
-    
+
     # Sort and limit to 6 options
     options = sorted(set(options))
-    
-    # Filter to keep reasonable range (not too small, not more than 50% of remaining)
+
+    # Filter to keep reasonable range (not more than 60% of remaining, unless it's the only option)
     options = [o for o in options if o <= remaining * 0.6 or o == remaining]
-    
+
     return options[:6]
 
 
 async def share_gift(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Join shared purchase - show contribution options"""
+    """Join shared purchase - show contribution options or fixed amount"""
     query = update.callback_query
     await query.answer()
-    
+
     gift_id = int(query.data.split("_")[1])
     user = update.effective_user
     gift = db.get_gift(gift_id)
-    
+
     if not gift:
         await query.answer("❌ Подарок не найден", show_alert=True)
         return
-    
+
     # Check if already participating
     buyers = db.get_gift_buyers(gift_id)
     if any(b['user_id'] == user.id for b in buyers):
         await query.answer("Вы уже участвуете в покупке этого подарка!", show_alert=True)
         return
-    
+
     # Check if fully funded
     total_pledged = sum(b['amount'] or 0 for b in buyers)
     if gift['price'] and total_pledged >= gift['price']:
         await query.answer("❌ Сумма уже полностью собрана!", show_alert=True)
         return
-    
+
     gift_price = gift['price'] or 0
     remaining = gift_price - total_pledged
-    
+
     context.user_data['contribution_gift_id'] = gift_id
-    
-    # Get contribution options
-    options = get_contribution_options(gift_price, total_pledged)
-    
+
+    # Check if there are already contributors with a set amount
+    # If so, the contribution amount is fixed (first contributor sets it)
+    existing_contribution = None
+    for buyer in buyers:
+        if buyer['amount'] and buyer['amount'] < gift_price:
+            existing_contribution = buyer['amount']
+            break
+
     keyboard = []
-    if options:
-        # Create rows of 2 buttons each
-        for i in range(0, len(options), 2):
-            row = []
-            for opt in options[i:i+2]:
-                num_people = remaining // opt
-                row.append(InlineKeyboardButton(
-                    f"{opt}₽ ({num_people} чел.)",
-                    callback_data=f"contrib_{gift_id}_{opt}"
-                ))
-            keyboard.append(row)
-    
-    keyboard.append([InlineKeyboardButton("❌ Отмена", callback_data=f"gift_{gift_id}")])
-    
-    remaining_text = f"{remaining}₽" if remaining != gift_price else f"{gift_price}₽"
-    already_text = f"\n\n💵 Уже собрано: {total_pledged}₽" if total_pledged > 0 else ""
-    
-    await query.edit_message_text(
-        f"👥 *Скинуться на подарок*\n\n"
-        f"🎁 {escape_md(gift['name'])}\n"
-        f"💰 Цена: {escape_md(str(gift_price))}₽{escape_md(already_text)}\n"
-        f"📊 Осталось собрать: {escape_md(remaining_text)}\n\n"
-        f"Выберите сумму вашего взноса:",
-        reply_markup=InlineKeyboardMarkup(keyboard),
-        parse_mode="MarkdownV2"
-    )
+
+    if existing_contribution:
+        # Fixed amount - first contributor already set the price
+        keyboard.append([InlineKeyboardButton(
+            f"✅ Присоединиться за {existing_contribution}₽",
+            callback_data=f"contrib_{gift_id}_{existing_contribution}"
+        )])
+        keyboard.append([InlineKeyboardButton("❌ Отмена", callback_data=f"gift_{gift_id}")])
+
+        participants_info = ", ".join([escape_md(b['user_name'].split()[0]) for b in buyers])
+        needed_people = gift_price // existing_contribution
+        current_people = len(buyers)
+
+        await query.edit_message_text(
+            f"👥 *Присоединиться к сбору*\n\n"
+            f"🎁 {escape_md(gift['name'])}\n"
+            f"💰 Цена: {escape_md(str(gift_price))}₽\n\n"
+            f"📊 Сумма взноса: *{existing_contribution}₽*\n"
+            f"👥 Уже участвуют \\({current_people}/{needed_people}\\): {participants_info}\n"
+            f"💵 Собрано: {total_pledged} из {gift_price}₽\n\n"
+            f"Хотите присоединиться?",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode="MarkdownV2"
+        )
+    else:
+        # No contributors yet - show options for first contributor
+        options = get_contribution_options(gift_price, total_pledged)
+
+        if options:
+            # Create rows of 2 buttons each
+            for i in range(0, len(options), 2):
+                row = []
+                for opt in options[i:i+2]:
+                    num_people = remaining // opt
+                    row.append(InlineKeyboardButton(
+                        f"{opt}₽ ({num_people} чел.)",
+                        callback_data=f"contrib_{gift_id}_{opt}"
+                    ))
+                keyboard.append(row)
+
+        keyboard.append([InlineKeyboardButton("❌ Отмена", callback_data=f"gift_{gift_id}")])
+
+        await query.edit_message_text(
+            f"👥 *Скинуться на подарок*\n\n"
+            f"🎁 {escape_md(gift['name'])}\n"
+            f"💰 Цена: {escape_md(str(gift_price))}₽\n"
+            f"📊 Осталось собрать: {escape_md(str(remaining))}₽\n\n"
+            f"Вы первый\\! Выберите сумму взноса\\.\n"
+            f"_Остальные участники будут скидываться по той же сумме\\._",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode="MarkdownV2"
+        )
 
 
 async def select_contribution(update: Update, context: ContextTypes.DEFAULT_TYPE):
