@@ -149,7 +149,27 @@ class Database:
                 "UPDATE gifts SET status = ? WHERE id = ?",
                 (status, gift_id)
             )
-    
+
+    def update_gift(self, gift_id: int, name: Optional[str] = None, price: Optional[int] = None):
+        """Update gift name and/or price"""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            if name is not None and price is not None:
+                cursor.execute(
+                    "UPDATE gifts SET name = ?, price = ? WHERE id = ?",
+                    (name, price, gift_id)
+                )
+            elif name is not None:
+                cursor.execute(
+                    "UPDATE gifts SET name = ? WHERE id = ?",
+                    (name, gift_id)
+                )
+            elif price is not None:
+                cursor.execute(
+                    "UPDATE gifts SET price = ? WHERE id = ?",
+                    (price, gift_id)
+                )
+
     def delete_gift(self, gift_id: int):
         """Delete a gift"""
         with self._get_connection() as conn:
