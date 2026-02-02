@@ -41,6 +41,8 @@ SETTING_CONTRIBUTION = 3
 BANNING_USER = 4
 ADDING_FACT = 5
 BROADCAST_MESSAGE = 6
+EDITING_GIFT_NAME = 7
+EDITING_GIFT_PRICE = 8
 
 # Birthday person name (all declensions)
 BIRTHDAY_PERSON = "Толя"          # Именительный: кто?
@@ -500,10 +502,13 @@ async def show_gift_details(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if gift['status'] not in ["already_has", "bought"]:
         keyboard.append([InlineKeyboardButton("🚫 Уже есть у именинника", callback_data=f"already_has_{gift_id}")])
-    
+
     if is_admin(user.id):
-        keyboard.append([InlineKeyboardButton("🗑 Удалить (админ)", callback_data=f"delete_{gift_id}")])
-    
+        keyboard.append([
+            InlineKeyboardButton("✏️ Редактировать", callback_data=f"edit_{gift_id}"),
+            InlineKeyboardButton("🗑 Удалить", callback_data=f"delete_{gift_id}")
+        ])
+
     keyboard.append([InlineKeyboardButton("🔙 К списку", callback_data="list_gifts")])
     
     await query.edit_message_text(
@@ -1370,17 +1375,175 @@ async def admin_add_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def delete_gift(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Delete a gift (admin only)"""
     query = update.callback_query
-    
+
     user = update.effective_user
     if not is_admin(user.id):
         await query.answer("❌ Только для администраторов", show_alert=True)
         return
-    
+
     gift_id = int(query.data.split("_")[1])
     db.delete_gift(gift_id)
-    
+
     await query.answer("🗑 Подарок удалён!", show_alert=True)
     await list_gifts(update, context)
+
+
+# ============ EDIT GIFT (ADMIN) ============
+
+async def start_edit_gift(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Start editing a gift (admin only)"""
+    query = update.callback_query
+    await query.answer()
+
+    user = update.effective_user
+    if not is_admin(user.id):
+        await query.answer("❌ Только для администраторов", show_alert=True)
+        return ConversationHandler.END
+
+    gift_id = int(query.data.split("_")[1])
+    gift = db.get_gift(gift_id)
+
+    if not gift:
+        await query.answer("❌ Подарок не найден", show_alert=True)
+        return ConversationHandler.END
+
+    context.user_data['edit_gift_id'] = gift_id
+
+    price_str = f"{gift['price']}₽" if gift['price'] else "не указана"
+
+    keyboard = [
+        [InlineKeyboardButton("✏️ Изменить название", callback_data=f"edit_name_{gift_id}")],
+        [InlineKeyboardButton("💰 Изменить цену", callback_data=f"edit_price_{gift_id}")],
+        [InlineKeyboardButton("🔙 Назад", callback_data=f"gift_{gift_id}")],
+    ]
+
+    await query.edit_message_text(
+        f"✏️ *Редактирование подарка*\n\n"
+        f"🎁 Название: {escape_md(gift['name'])}\n"
+        f"💰 Цена: {escape_md(price_str)}\n\n"
+        f"Что хотите изменить?",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode="MarkdownV2"
+    )
+    return ConversationHandler.END
+
+
+async def edit_name_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Start editing gift name"""
+    query = update.callback_query
+    await query.answer()
+
+    user = update.effective_user
+    if not is_admin(user.id):
+        return ConversationHandler.END
+
+    gift_id = int(query.data.split("_")[2])
+    context.user_data['edit_gift_id'] = gift_id
+
+    gift = db.get_gift(gift_id)
+    if not gift:
+        return ConversationHandler.END
+
+    keyboard = [[InlineKeyboardButton("❌ Отмена", callback_data=f"edit_{gift_id}")]]
+
+    await query.edit_message_text(
+        f"✏️ *Изменение названия*\n\n"
+        f"Текущее название: {escape_md(gift['name'])}\n\n"
+        f"Введите новое название:",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode="MarkdownV2"
+    )
+    return EDITING_GIFT_NAME
+
+
+async def edit_name_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Save new gift name"""
+    user = update.effective_user
+    if not is_admin(user.id):
+        return ConversationHandler.END
+
+    gift_id = context.user_data.get('edit_gift_id')
+    if not gift_id:
+        await update.message.reply_text("❌ Ошибка. Попробуйте заново.")
+        return ConversationHandler.END
+
+    new_name = update.message.text.strip()
+    if len(new_name) < 2:
+        await update.message.reply_text("❌ Название слишком короткое. Попробуйте ещё раз:")
+        return EDITING_GIFT_NAME
+
+    db.update_gift(gift_id, name=new_name)
+
+    await update.message.reply_text(
+        f"✅ Название изменено на: *{new_name}*",
+        parse_mode="Markdown"
+    )
+
+    # Show gift details
+    context.user_data.clear()
+    await show_main_menu(update, context)
+    return ConversationHandler.END
+
+
+async def edit_price_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Start editing gift price"""
+    query = update.callback_query
+    await query.answer()
+
+    user = update.effective_user
+    if not is_admin(user.id):
+        return ConversationHandler.END
+
+    gift_id = int(query.data.split("_")[2])
+    context.user_data['edit_gift_id'] = gift_id
+
+    gift = db.get_gift(gift_id)
+    if not gift:
+        return ConversationHandler.END
+
+    price_str = f"{gift['price']}₽" if gift['price'] else "не указана"
+
+    keyboard = [[InlineKeyboardButton("❌ Отмена", callback_data=f"edit_{gift_id}")]]
+
+    await query.edit_message_text(
+        f"💰 *Изменение цены*\n\n"
+        f"Текущая цена: {escape_md(price_str)}\n\n"
+        f"Введите новую цену \\(в рублях\\):",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode="MarkdownV2"
+    )
+    return EDITING_GIFT_PRICE
+
+
+async def edit_price_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Save new gift price"""
+    user = update.effective_user
+    if not is_admin(user.id):
+        return ConversationHandler.END
+
+    gift_id = context.user_data.get('edit_gift_id')
+    if not gift_id:
+        await update.message.reply_text("❌ Ошибка. Попробуйте заново.")
+        return ConversationHandler.END
+
+    try:
+        new_price = int(update.message.text.replace(" ", "").replace("₽", ""))
+        if new_price <= 0:
+            raise ValueError("Price must be positive")
+    except ValueError:
+        await update.message.reply_text("❌ Введите положительное число. Например: 5000")
+        return EDITING_GIFT_PRICE
+
+    db.update_gift(gift_id, price=new_price)
+
+    await update.message.reply_text(
+        f"✅ Цена изменена на: *{new_price}₽*",
+        parse_mode="Markdown"
+    )
+
+    context.user_data.clear()
+    await show_main_menu(update, context)
+    return ConversationHandler.END
 
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1469,7 +1632,35 @@ def main():
             CommandHandler("cancel", cancel),
         ],
     )
-    
+
+    # Conversation handler for editing gift name
+    edit_name_handler = ConversationHandler(
+        entry_points=[CallbackQueryHandler(edit_name_start, pattern="^edit_name_")],
+        states={
+            EDITING_GIFT_NAME: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, edit_name_save),
+            ],
+        },
+        fallbacks=[
+            CommandHandler("cancel", cancel),
+            CallbackQueryHandler(start_edit_gift, pattern="^edit_\\d+$"),
+        ],
+    )
+
+    # Conversation handler for editing gift price
+    edit_price_handler = ConversationHandler(
+        entry_points=[CallbackQueryHandler(edit_price_start, pattern="^edit_price_")],
+        states={
+            EDITING_GIFT_PRICE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, edit_price_save),
+            ],
+        },
+        fallbacks=[
+            CommandHandler("cancel", cancel),
+            CallbackQueryHandler(start_edit_gift, pattern="^edit_\\d+$"),
+        ],
+    )
+
     # Add handlers
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("menu", start))
@@ -1480,7 +1671,9 @@ def main():
     application.add_handler(ban_handler)
     application.add_handler(facts_handler)
     application.add_handler(broadcast_handler)
-    
+    application.add_handler(edit_name_handler)
+    application.add_handler(edit_price_handler)
+
     # Callback query handlers
     application.add_handler(CallbackQueryHandler(handle_main_menu_callback, pattern="^main_menu$"))
     application.add_handler(CallbackQueryHandler(list_gifts, pattern="^list_gifts$"))
@@ -1507,7 +1700,8 @@ def main():
     application.add_handler(CallbackQueryHandler(mark_bought, pattern="^bought_"))
     application.add_handler(CallbackQueryHandler(mark_already_has, pattern="^already_has_"))
     application.add_handler(CallbackQueryHandler(delete_gift, pattern="^delete_"))
-    
+    application.add_handler(CallbackQueryHandler(start_edit_gift, pattern="^edit_\\d+$"))
+
     # Start the bot
     logger.info("Starting bot...")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
